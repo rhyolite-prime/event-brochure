@@ -21,12 +21,11 @@ const pageSizes = ref([])            // [{ w, h }] at scale 1
 const currentPage = ref(1)
 const scale = ref(1)
 const fitMode = ref('width')         // 'width' | 'page' | 'custom'
-const theme = ref('paper')           // 'paper' | 'sepia' | 'night'
+const theme = ref('paper')           // 'paper' | 'sepia'
 const sidebarOpen = ref(false)       // opened on mount for desktop only
-const sidebarTab = ref('toc')        // 'toc' | 'pages' | 'search'
+const sidebarTab = ref('pages')      // 'pages' | 'search'
 const isMobile = ref(false)
 const chromeVisible = ref(true)      // kindle-style: tap the page to hide/show the bars
-const outline = ref([])              // [{ title, depth, page }]
 const isFullscreen = ref(false)
 
 /* --------------------------------- search --------------------------------- */
@@ -63,7 +62,7 @@ const progressPct = computed(() =>
   numPages.value ? Math.round((currentPage.value / numPages.value) * 100) : 0
 )
 const themeLabel = computed(() =>
-  ({ paper: 'Paper', sepia: 'Sepia', night: 'Night' })[theme.value]
+  ({ paper: 'Paper', sepia: 'Sepia' })[theme.value]
 )
 
 function slotStyle (i) {
@@ -101,36 +100,11 @@ async function loadDocument () {
     await nextTick()
     applyFit()
     setupObservers()
-    loadOutline(doc)
   } catch (err) {
     console.error(err)
     loadError.value = 'The brochure could not be loaded. Please make sure public/brochure.pdf exists.'
     loading.value = false
   }
-}
-
-async function loadOutline (doc) {
-  try {
-    const raw = await doc.getOutline()
-    if (!raw || !raw.length) return
-    const flat = []
-    async function walk (items, depth) {
-      for (const it of items) {
-        let page = null
-        try {
-          let dest = it.dest
-          if (typeof dest === 'string') dest = await doc.getDestination(dest)
-          if (Array.isArray(dest) && dest[0]) {
-            page = (await doc.getPageIndex(dest[0])) + 1
-          }
-        } catch { /* unresolvable dest — keep item without page */ }
-        flat.push({ title: it.title, depth, page })
-        if (it.items?.length) await walk(it.items, depth + 1)
-      }
-    }
-    await walk(raw, 0)
-    outline.value = flat
-  } catch { /* no outline available */ }
 }
 
 /* ------------------------------- page render ------------------------------ */
@@ -148,6 +122,18 @@ function setupObservers () {
   }, { root: scrollerEl.value, rootMargin: '720px 0px' })
   pageEls.forEach((el) => el && pageObserver.observe(el))
 
+  refreshThumbObserver()
+}
+
+/**
+ * The "Pages" panel is mounted/unmounted with its tab (v-if), so the
+ * thumbnail canvases are recreated each time it opens. Re-attach the
+ * observer and reset the rendered flags whenever the panel is shown.
+ */
+function refreshThumbObserver () {
+  if (!pdfDoc.value) return
+  thumbObserver?.disconnect()
+  Object.keys(renderedThumbs).forEach((k) => delete renderedThumbs[k])
   thumbObserver = new IntersectionObserver((entries) => {
     for (const e of entries) {
       const n = Number(e.target.dataset.page)
@@ -156,6 +142,12 @@ function setupObservers () {
   }, { rootMargin: '400px 0px' })
   thumbEls.forEach((el) => el && thumbObserver.observe(el))
 }
+
+watch([sidebarTab, sidebarOpen], async ([tab, open]) => {
+  if (!open || tab !== 'pages') return
+  await nextTick()
+  refreshThumbObserver()
+})
 
 function ensureRendered (n) {
   if (renderedScale[n] === scale.value) return
@@ -445,7 +437,7 @@ function openSearch () {
 
 /* ------------------------------ theme / misc ------------------------------ */
 function cycleTheme () {
-  theme.value = theme.value === 'paper' ? 'sepia' : theme.value === 'sepia' ? 'night' : 'paper'
+  theme.value = theme.value === 'paper' ? 'sepia' : 'paper'
 }
 
 function toggleFullscreen () {
@@ -680,7 +672,7 @@ onBeforeUnmount(() => {
     <!-- ================= top bar ================= -->
     <header class="topbar" v-show="chromeVisible">
       <div class="topbar-left">
-        <button class="icon-btn" :class="{ on: sidebarOpen }" title="Contents (sidebar)" @click="sidebarOpen = !sidebarOpen">
+        <button class="icon-btn" :class="{ on: sidebarOpen }" title="Pages & search (sidebar)" @click="sidebarOpen = !sidebarOpen">
           <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16" /></svg>
         </button>
         <div class="title-block">
@@ -731,29 +723,12 @@ onBeforeUnmount(() => {
       <!-- ================= sidebar ================= -->
       <aside class="sidebar" v-show="sidebarOpen">
         <nav class="tabs">
-          <button :class="{ on: sidebarTab === 'toc' }" @click="sidebarTab = 'toc'">Contents</button>
           <button :class="{ on: sidebarTab === 'pages' }" @click="sidebarTab = 'pages'">Pages</button>
           <button :class="{ on: sidebarTab === 'search' }" @click="openSearch()">Search</button>
         </nav>
 
-        <!-- table of contents -->
-        <div v-if="sidebarTab === 'toc'" class="panel">
-          <p v-if="!outline.length" class="panel-empty">This document has no table of contents.</p>
-          <button
-            v-for="(it, i) in outline"
-            :key="i"
-            class="toc-item"
-            :class="{ on: it.page === currentPage }"
-            :style="{ paddingLeft: 14 + it.depth * 14 + 'px' }"
-            @click="it.page && navigateTo(it.page)"
-          >
-            <span class="toc-title">{{ it.title }}</span>
-            <span v-if="it.page" class="toc-page">{{ it.page }}</span>
-          </button>
-        </div>
-
         <!-- thumbnails -->
-        <div v-else-if="sidebarTab === 'pages'" class="panel thumbs">
+        <div v-if="sidebarTab === 'pages'" class="panel thumbs">
           <button
             v-for="n in numPages"
             :key="n"
@@ -927,19 +902,6 @@ onBeforeUnmount(() => {
   --canvas-filter: sepia(0.42) saturate(0.9) brightness(0.99);
 }
 
-.reader.theme-night {
-  --bg: #15130f;
-  --surface: #201d18;
-  --surface-2: #27231d;
-  --ink: #e6ddcf;
-  --muted: #9a9082;
-  --line: #3a352c;
-  --accent: #c9a35f;
-  --accent-soft: rgba(201, 163, 95, 0.16);
-  --page-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
-  --canvas-filter: invert(0.93) hue-rotate(180deg) contrast(0.92);
-}
-
 /* -------------------------------- top bar -------------------------------- */
 .topbar {
   display: flex;
@@ -1068,29 +1030,6 @@ onBeforeUnmount(() => {
 
 .panel { flex: 1; overflow-y: auto; padding: 8px; min-height: 0; }
 .panel-empty { color: var(--muted); font-size: 12.5px; padding: 12px 10px; line-height: 1.5; }
-
-/* toc */
-.toc-item {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  padding: 9px 12px;
-  border: none;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.toc-item:hover { background: var(--accent-soft); }
-.toc-item.on { background: var(--accent-soft); }
-.toc-item.on .toc-title { color: var(--accent); font-weight: 600; }
-.toc-title { font-family: 'EB Garamond', Georgia, serif; font-size: 14.5px; }
-.toc-page { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 
 /* thumbnails */
 .thumbs {
@@ -1318,8 +1257,6 @@ onBeforeUnmount(() => {
   .icon-btn { padding: 10px; }
   .icon-btn svg { width: 19px; height: 19px; }
   .tabs button { padding: 13px 4px; font-size: 13px; }
-  .toc-item { padding-top: 12px; padding-bottom: 12px; }
-  .toc-title { font-size: 15.5px; }
   .result { padding: 11px 10px; }
   .search-box { padding: 10px 12px; }
   .search-box input { font-size: 15px; }   /* ≥15px stops iOS auto-zoom on focus */
@@ -1363,9 +1300,9 @@ onBeforeUnmount(() => {
 
 /* coarse pointers: no hover states lingering after taps */
 @media (hover: none) {
-  .icon-btn:hover, .text-btn:hover, .toc-item:hover, .result:hover, .tabs button:hover {
+  .icon-btn:hover, .text-btn:hover, .result:hover, .tabs button:hover {
     background: transparent;
   }
-  .icon-btn.on, .text-btn.on, .toc-item.on, .result.on { background: var(--accent-soft); }
+  .icon-btn.on, .text-btn.on, .result.on { background: var(--accent-soft); }
 }
 </style>

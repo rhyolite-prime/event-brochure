@@ -10,10 +10,8 @@ Kindle-style reader built on Mozilla's [pdf.js](https://mozilla.github.io/pdf.js
 - **Full-text search** — searches every page, shows results with context
   snippets, highlights matches on the page, and lets you step through results
   (Enter / Shift+Enter).
-- **Table of contents** — built from the PDF's embedded bookmarks/outline.
 - **Page thumbnails** — lazily rendered thumbnail grid for fast visual navigation.
-- **Reading themes** — Paper, Sepia, and Night (dark-inverted pages), just like
-  an e-reader.
+- **Reading themes** — Paper and Sepia, just like an e-reader.
 - **Zoom controls** — zoom in/out, fit-width, fit-page, with crisp HiDPI rendering.
 - **Text selection** — real selectable text via the pdf.js text layer.
 - **Extras** — jump-to-page input, download button, full-screen mode.
@@ -34,9 +32,8 @@ The brochure is a local asset served from `public/brochure.pdf`.
 **Replace that file with the real brochure PDF** — no code changes needed.
 The title/subtitle shown in the header can be edited in `app/app.vue`.
 
-A sample brochure (a fictional "Celebration of Life" program, with embedded
-bookmarks so the Contents panel is populated) is included and can be
-regenerated with:
+A sample brochure (a fictional "Celebration of Life" program) is included and
+can be regenerated with:
 
 ```bash
 npm run make:pdf
