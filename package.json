@@ -1,0 +1,22 @@
+{
+  "name": "event-brochure",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "make:pdf": "node scripts/generate-sample-pdf.mjs"
+  },
+  "dependencies": {
+    "nuxt": "^4.1.3",
+    "pdfjs-dist": "^5.4.149",
+    "vue": "^3.5.22",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "pdfkit": "^0.17.2"
+  }
+}
