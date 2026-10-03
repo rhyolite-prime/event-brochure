@@ -8,7 +8,7 @@ export default defineNuxtConfig({
       title: 'In Loving Memory — Service Brochure',
       htmlAttrs: { lang: 'en' },
       meta: [
-        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+        { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
         { name: 'description', content: 'Celebration of Life service brochure' },
         { name: 'theme-color', content: '#171412' }
       ],

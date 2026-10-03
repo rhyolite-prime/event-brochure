@@ -22,8 +22,10 @@ const currentPage = ref(1)
 const scale = ref(1)
 const fitMode = ref('width')         // 'width' | 'page' | 'custom'
 const theme = ref('paper')           // 'paper' | 'sepia' | 'night'
-const sidebarOpen = ref(true)
+const sidebarOpen = ref(false)       // opened on mount for desktop only
 const sidebarTab = ref('toc')        // 'toc' | 'pages' | 'search'
+const isMobile = ref(false)
+const chromeVisible = ref(true)      // kindle-style: tap the page to hide/show the bars
 const outline = ref([])              // [{ title, depth, page }]
 const isFullscreen = ref(false)
 
@@ -37,6 +39,7 @@ const searchInputEl = ref(null)
 
 /* ------------------------------ DOM plumbing ------------------------------ */
 const scrollerEl = ref(null)
+const stageEl = ref(null)
 const pageEls = []
 const canvasEls = []
 const textEls = []
@@ -240,8 +243,8 @@ function applyFit () {
   const scroller = scrollerEl.value
   const s = pageSizes.value[Math.max(0, currentPage.value - 1)]
   if (!scroller || !s) return
-  const availW = scroller.clientWidth - 48
-  const availH = scroller.clientHeight - 40
+  const availW = scroller.clientWidth - (isMobile.value ? 18 : 48)
+  const availH = scroller.clientHeight - (isMobile.value ? 20 : 40)
   if (fitMode.value === 'width') {
     scale.value = clampScale(availW / s.w)
   } else if (fitMode.value === 'page') {
@@ -276,6 +279,12 @@ function scrollToPage (n, smooth = false) {
 
 function nextPage () { scrollToPage(currentPage.value + 1, true) }
 function prevPage () { scrollToPage(currentPage.value - 1, true) }
+
+/** navigate from a sidebar panel — on mobile, close the drawer afterwards */
+function navigateTo (n) {
+  scrollToPage(n)
+  if (isMobile.value) sidebarOpen.value = false
+}
 
 function onScroll () {
   if (scrollRaf) return
@@ -364,6 +373,7 @@ function goToResult (k) {
   activeResultIdx.value = k
   const r = searchResults.value[k]
   scrollToPage(r.page)
+  if (isMobile.value) sidebarOpen.value = false
   refreshHighlights()
   // center the active highlight once the text layer has it
   setTimeout(() => {
@@ -477,18 +487,187 @@ function onResize () {
   if (fitMode.value !== 'custom') applyFit()
 }
 
+/* ----------------------- touch gestures (mobile UX) ----------------------- */
+let pinch = null      // { d0, scale0, k, focalX, focalY, originX, originY }
+let tapStart = null   // { x, y, t }
+let tapTimer = 0
+let lastTapAt = 0
+
+function touchDist (t) {
+  const dx = t[0].clientX - t[1].clientX
+  const dy = t[0].clientY - t[1].clientY
+  return Math.hypot(dx, dy)
+}
+
+function onTouchStart (e) {
+  if (e.touches.length === 2) {
+    clearTimeout(tapTimer); tapTimer = 0
+    tapStart = null
+    const sc = scrollerEl.value
+    const stage = stageEl.value
+    if (!sc || !stage) return
+    const rect = sc.getBoundingClientRect()
+    const stageRect = stage.getBoundingClientRect()
+    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2
+    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2
+    pinch = {
+      d0: touchDist(e.touches),
+      scale0: scale.value,
+      k: 1,
+      focalX: midX - rect.left,
+      focalY: midY - rect.top,
+      originX: midX - stageRect.left,
+      originY: midY - stageRect.top
+    }
+    stage.style.transformOrigin = `${pinch.originX}px ${pinch.originY}px`
+    stage.style.willChange = 'transform'
+  } else if (e.touches.length === 1) {
+    tapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }
+  }
+}
+
+function onTouchMove (e) {
+  if (pinch && e.touches.length === 2) {
+    e.preventDefault()
+    const raw = (touchDist(e.touches) / pinch.d0) * pinch.scale0
+    pinch.k = clampScale(raw) / pinch.scale0
+    const stage = stageEl.value
+    if (stage) stage.style.transform = `scale(${pinch.k})`
+    return
+  }
+  if (tapStart && e.touches.length === 1) {
+    const dx = e.touches[0].clientX - tapStart.x
+    const dy = e.touches[0].clientY - tapStart.y
+    if (Math.hypot(dx, dy) > 10) tapStart = null
+  }
+}
+
+function onTouchEnd (e) {
+  // ----- commit a pinch -----
+  if (pinch && e.touches.length < 2) {
+    const stage = stageEl.value
+    const sc = scrollerEl.value
+    if (stage) {
+      stage.style.transform = ''
+      stage.style.willChange = ''
+    }
+    const next = clampScale(pinch.scale0 * pinch.k)
+    const { focalX, focalY } = pinch
+    const prev = pinch.scale0
+    pinch = null
+    if (sc && Math.abs(next - prev) > 0.01) {
+      fitMode.value = 'custom'
+      scale.value = next
+      nextTick(() => {
+        const ratio = next / prev
+        sc.scrollTop = (sc.scrollTop + focalY) * ratio - focalY
+        sc.scrollLeft = (sc.scrollLeft + focalX) * ratio - focalX
+      })
+    }
+    return
+  }
+
+  // ----- tap / double-tap -----
+  if (!tapStart || e.touches.length !== 0) { tapStart = null; return }
+  const t0 = tapStart
+  tapStart = null
+  if (Date.now() - t0.t > 320) return
+  const touch = e.changedTouches[0]
+  if (!touch || Math.hypot(touch.clientX - t0.x, touch.clientY - t0.y) > 10) return
+  if (window.getSelection && String(window.getSelection())) return // selecting text
+
+  const now = Date.now()
+  if (now - lastTapAt < 300) {
+    // double tap → toggle zoom
+    clearTimeout(tapTimer); tapTimer = 0
+    lastTapAt = 0
+    doubleTapZoom(touch.clientX, touch.clientY)
+  } else {
+    lastTapAt = now
+    clearTimeout(tapTimer)
+    tapTimer = setTimeout(() => {
+      tapTimer = 0
+      if (sidebarOpen.value && isMobile.value) sidebarOpen.value = false
+      else chromeVisible.value = !chromeVisible.value
+    }, 300)
+  }
+}
+
+function onTouchCancel () {
+  if (pinch) {
+    const stage = stageEl.value
+    if (stage) { stage.style.transform = ''; stage.style.willChange = '' }
+    pinch = null
+  }
+  tapStart = null
+}
+
+function doubleTapZoom (clientX, clientY) {
+  const sc = scrollerEl.value
+  if (!sc) return
+  const rect = sc.getBoundingClientRect()
+  const focalX = clientX - rect.left
+  const focalY = clientY - rect.top
+  const prev = scale.value
+  if (fitMode.value === 'custom') {
+    setFit('width')                     // zoomed in → back to fit width
+  } else {
+    fitMode.value = 'custom'            // zoom in on the tapped point
+    scale.value = clampScale(prev * 1.8)
+  }
+  nextTick(() => {
+    const ratio = scale.value / prev
+    sc.scrollTop = (sc.scrollTop + focalY) * ratio - focalY
+    sc.scrollLeft = (sc.scrollLeft + focalX) * ratio - focalX
+  })
+}
+
+function onMediaChange (e) {
+  isMobile.value = e.matches
+  if (!e.matches) {
+    chromeVisible.value = true
+    sidebarOpen.value = true
+  } else {
+    sidebarOpen.value = false
+  }
+}
+
 /* -------------------------------- lifecycle ------------------------------- */
+let mql = null
+
 onMounted(() => {
+  mql = window.matchMedia('(max-width: 860px)')
+  isMobile.value = mql.matches
+  sidebarOpen.value = !mql.matches
+  mql.addEventListener('change', onMediaChange)
+
   loadDocument()
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('resize', onResize)
   document.addEventListener('fullscreenchange', onFsChange)
+
+  const sc = scrollerEl.value
+  if (sc) {
+    sc.addEventListener('touchstart', onTouchStart, { passive: true })
+    sc.addEventListener('touchmove', onTouchMove, { passive: false })
+    sc.addEventListener('touchend', onTouchEnd, { passive: true })
+    sc.addEventListener('touchcancel', onTouchCancel, { passive: true })
+  }
 })
 
 onBeforeUnmount(() => {
+  mql?.removeEventListener('change', onMediaChange)
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', onResize)
   document.removeEventListener('fullscreenchange', onFsChange)
+  const sc = scrollerEl.value
+  if (sc) {
+    sc.removeEventListener('touchstart', onTouchStart)
+    sc.removeEventListener('touchmove', onTouchMove)
+    sc.removeEventListener('touchend', onTouchEnd)
+    sc.removeEventListener('touchcancel', onTouchCancel)
+  }
+  clearTimeout(tapTimer)
   pageObserver?.disconnect()
   thumbObserver?.disconnect()
   renderTasks.forEach((t) => t.cancel())
@@ -499,7 +678,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="reader" :class="`theme-${theme}`">
     <!-- ================= top bar ================= -->
-    <header class="topbar">
+    <header class="topbar" v-show="chromeVisible">
       <div class="topbar-left">
         <button class="icon-btn" :class="{ on: sidebarOpen }" title="Contents (sidebar)" @click="sidebarOpen = !sidebarOpen">
           <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16" /></svg>
@@ -542,6 +721,13 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="main">
+      <!-- drawer backdrop (mobile) -->
+      <div
+        v-if="sidebarOpen && isMobile"
+        class="backdrop"
+        @click="sidebarOpen = false"
+      />
+
       <!-- ================= sidebar ================= -->
       <aside class="sidebar" v-show="sidebarOpen">
         <nav class="tabs">
@@ -559,7 +745,7 @@ onBeforeUnmount(() => {
             class="toc-item"
             :class="{ on: it.page === currentPage }"
             :style="{ paddingLeft: 14 + it.depth * 14 + 'px' }"
-            @click="it.page && scrollToPage(it.page)"
+            @click="it.page && navigateTo(it.page)"
           >
             <span class="toc-title">{{ it.title }}</span>
             <span v-if="it.page" class="toc-page">{{ it.page }}</span>
@@ -575,7 +761,7 @@ onBeforeUnmount(() => {
             :class="{ on: n === currentPage }"
             :data-page="n"
             :ref="(el) => (thumbEls[n - 1] = el)"
-            @click="scrollToPage(n)"
+            @click="navigateTo(n)"
           >
             <div class="thumb-frame" :style="thumbStyle(n - 1)">
               <canvas />
@@ -640,7 +826,7 @@ onBeforeUnmount(() => {
           <p>{{ loadError }}</p>
         </div>
 
-        <template v-else>
+        <div v-else class="stage" ref="stageEl">
           <div
             v-for="n in numPages"
             :key="n"
@@ -652,12 +838,19 @@ onBeforeUnmount(() => {
             <canvas :ref="(el) => (canvasEls[n - 1] = el)" />
             <div class="textLayer" :ref="(el) => (textEls[n - 1] = el)" />
           </div>
-        </template>
+        </div>
       </div>
+
+      <!-- floating page pill (shown when the bars are tapped away) -->
+      <transition name="pill">
+        <div v-if="!chromeVisible && numPages" class="page-pill">
+          {{ currentPage }} / {{ numPages }} · {{ progressPct }}%
+        </div>
+      </transition>
     </div>
 
     <!-- ================= bottom (kindle-style) bar ================= -->
-    <footer class="bottombar" v-if="!loading && !loadError">
+    <footer class="bottombar" v-if="!loading && !loadError" v-show="chromeVisible">
       <button class="icon-btn" title="Previous page (←)" @click="prevPage" :disabled="currentPage <= 1">
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg>
       </button>
@@ -719,6 +912,9 @@ onBeforeUnmount(() => {
   color: var(--ink);
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 14px;
+}
+@supports (height: 100dvh) {
+  .reader { height: 100dvh; } /* track the real visible height on mobile (URL bar) */
 }
 
 .reader.theme-sepia {
@@ -813,7 +1009,35 @@ onBeforeUnmount(() => {
 .divider { width: 1px; height: 20px; background: var(--line); margin: 0 6px; }
 
 /* --------------------------------- layout --------------------------------- */
-.main { flex: 1; display: flex; min-height: 0; }
+.main { flex: 1; display: flex; min-height: 0; position: relative; }
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  background: rgba(10, 8, 5, 0.45);
+  backdrop-filter: blur(1.5px);
+}
+
+.page-pill {
+  position: absolute;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 8;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 6px 14px;
+  border-radius: 999px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.pill-enter-active, .pill-leave-active { transition: opacity 0.2s, transform 0.2s; }
+.pill-enter-from, .pill-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 
 .sidebar {
   width: 300px;
@@ -951,12 +1175,17 @@ onBeforeUnmount(() => {
 
 /* -------------------------------- scroller -------------------------------- */
 .scroller {
+  position: relative;
   flex: 1;
   overflow: auto;
   padding: 20px 24px 28px;
   scroll-behavior: auto;
   min-width: 0;
+  touch-action: pan-x pan-y;        /* we handle pinch-zoom ourselves */
+  overscroll-behavior: contain;     /* no pull-to-refresh mid-read */
+  -webkit-overflow-scrolling: touch;
 }
+.stage { min-width: 0; }
 .page-slot {
   position: relative;
   margin: 0 auto 18px;
@@ -1074,17 +1303,69 @@ onBeforeUnmount(() => {
 
 /* ------------------------------- responsive ------------------------------- */
 @media (max-width: 860px) {
+  /* --- top bar: compact, thumb-friendly --- */
+  .topbar {
+    padding: 6px 8px;
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+    gap: 6px;
+  }
+  .topbar-center { display: none; }        /* zoom = pinch & double-tap */
+  .title-block h1 { font-size: 15.5px; }
+  .title-block p { display: none; }
+  .theme-btn { font-size: 0; gap: 0; padding: 10px; }
+
+  /* --- bigger touch targets everywhere --- */
+  .icon-btn { padding: 10px; }
+  .icon-btn svg { width: 19px; height: 19px; }
+  .tabs button { padding: 13px 4px; font-size: 13px; }
+  .toc-item { padding-top: 12px; padding-bottom: 12px; }
+  .toc-title { font-size: 15.5px; }
+  .result { padding: 11px 10px; }
+  .search-box { padding: 10px 12px; }
+  .search-box input { font-size: 15px; }   /* ≥15px stops iOS auto-zoom on focus */
+
+  /* --- sidebar becomes a slide-over drawer --- */
   .sidebar {
     position: absolute;
     top: 0;
     bottom: 0;
     left: 0;
     z-index: 10;
-    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.18);
+    width: min(84vw, 330px);
+    flex: none;
+    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.3);
+    border-right: 1px solid var(--line);
   }
-  .main { position: relative; }
-  .topbar-center .text-btn { display: none; }
-  .title-block p { display: none; }
-  .theme-btn { font-size: 0; gap: 0; padding: 7px; }
+  .thumbs { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); padding: 12px; }
+
+  /* --- pages: edge-to-edge reading --- */
+  .scroller { padding: 10px 8px 16px; }
+  .page-slot { margin-bottom: 10px; }
+
+  /* --- bottom bar: compact, safe-area aware --- */
+  .bottombar {
+    gap: 6px;
+    padding: 8px 8px 10px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .page-slider { height: 6px; }
+  .page-slider::-webkit-slider-thumb { width: 20px; height: 20px; }
+  .page-slider::-moz-range-thumb { width: 18px; height: 18px; }
+  .progress-meta { font-size: 11px; }
+  .page-input { width: 38px; padding: 4px 0; }
+}
+
+/* very narrow phones */
+@media (max-width: 380px) {
+  .title-block h1 { font-size: 14px; }
+  .pct { display: none; }
+}
+
+/* coarse pointers: no hover states lingering after taps */
+@media (hover: none) {
+  .icon-btn:hover, .text-btn:hover, .toc-item:hover, .result:hover, .tabs button:hover {
+    background: transparent;
+  }
+  .icon-btn.on, .text-btn.on, .toc-item.on, .result.on { background: var(--accent-soft); }
 }
 </style>
