@@ -614,11 +614,18 @@ function doubleTapZoom (clientX, clientY) {
   })
 }
 
+/** true for touch-first devices (phones/tablets), regardless of width */
+function isTouchDevice () {
+  return window.matchMedia('(hover: none) and (pointer: coarse)').matches
+}
+
 function onMediaChange (e) {
   isMobile.value = e.matches
   if (!e.matches) {
     chromeVisible.value = true
-    sidebarOpen.value = true
+    // crossing to a wide layout (e.g. phone rotated to landscape):
+    // only auto-open the pane on real desktops, never on touch devices
+    if (!isTouchDevice()) sidebarOpen.value = true
   } else {
     sidebarOpen.value = false
   }
@@ -630,7 +637,9 @@ let mql = null
 onMounted(() => {
   mql = window.matchMedia('(max-width: 860px)')
   isMobile.value = mql.matches
-  sidebarOpen.value = !mql.matches
+  // the left pane starts hidden everywhere except true desktops
+  // (wide viewport AND a mouse-style pointer)
+  sidebarOpen.value = !mql.matches && !isTouchDevice()
   mql.addEventListener('change', onMediaChange)
 
   loadDocument()
